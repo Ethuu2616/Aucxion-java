@@ -1,0 +1,69 @@
+# ─── Java / Maven ─────────────────────────────────────────────────────────────
+# target/ and *.jar are NOT ignored — the built jar is committed so other machines work without building
+*.class
+*.war
+*.ear
+*.nar
+*.zip
+*.tar.gz
+*.rar
+hs_err_pid*
+replay_pid*
+
+# Exclude Maven build internals — only keep the final jar
+backend/target/*.jar.original
+backend/target/classes/
+backend/target/test-classes/
+backend/target/generated-sources/
+backend/target/maven-archiver/
+backend/target/maven-status/
+
+# Maven wrapper binary
+.mvn/wrapper/maven-wrapper.jar
+
+# ─── Spring Boot ──────────────────────────────────────────────────────────────
+application-local.properties
+application-prod.properties
+application-secret.properties
+
+# ─── Node / React ─────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/build/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# ─── Environment & Secrets ────────────────────────────────────────────────────
+.env
+.env.*
+*.secret
+secrets.properties
+
+# ─── IDEs ─────────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.project
+.classpath
+.settings/
+.factorypath
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
