@@ -29,20 +29,22 @@ application-secret.properties
 # ─── Node / React ─────────────────────────────────────────────────────────────
 frontend/node_modules/
 frontend/build/
-frontend/.env
-frontend/.env.local
-frontend/.env.development.local
-frontend/.env.test.local
-frontend/.env.production.local
 frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
 
 # ─── Environment & Secrets ────────────────────────────────────────────────────
+# .env has real credentials — never commit it
 .env
-.env.*
-*.secret
-secrets.properties
+# These are safe to commit — no real credentials inside
+!.env.example
+!frontend/.env.docker
+# Local frontend env overrides
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
 
 # ─── IDEs ─────────────────────────────────────────────────────────────────────
 .idea/
