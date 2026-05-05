@@ -79,11 +79,12 @@ export default function Dashboard() {
       )}
 
       {/* Stat row */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:12 }}>
         <StatCard icon={AlertTriangle} label="Total Threats"  value={threats.length}                                    color="#f85149" />
         <StatCard icon={ShieldCheck}   label="Active Threats" value={threats.filter(t=>t.status==='ACTIVE').length}    color="#f0883e" />
         <StatCard icon={Server}        label="Ports Scanned"  value={session?.portsScanned || 0}                       color="#58a6ff" />
         <StatCard icon={Wifi}          label="Open Ports"     value={data?.ports?.filter(p=>p.open).length || 0}       color="#d29922" />
+        <AccuracyCard metrics={data?.metrics} />
       </div>
 
       {/* Attack cards */}
@@ -189,4 +190,44 @@ function buildTimeline(threats) {
     b[k] = (b[k] || 0) + 1;
   });
   return Object.entries(b).map(([time, threats]) => ({ time, threats }));
+}
+
+function AccuracyCard({ metrics }) {
+  if (!metrics) return (
+    <div style={{ background:'#1c2333', border:'1px solid #30363d', borderRadius:10, padding:'16px 18px' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+        <p style={{ fontSize:12, fontWeight:500, color:'#8b949e', margin:0 }}>Scan Accuracy</p>
+        <Activity size={15} style={{ color:'#8b949e' }} strokeWidth={2} />
+      </div>
+      <p style={{ fontSize:26, fontWeight:700, color:'#8b949e', margin:0, lineHeight:1 }}>--</p>
+    </div>
+  );
+
+  const accuracy = metrics.accuracyScore || 0;
+  const color = accuracy >= 90 ? '#3fb950' : accuracy >= 75 ? '#58a6ff' : accuracy >= 60 ? '#d29922' : '#f85149';
+
+  return (
+    <div style={{ background:'#1c2333', border:'1px solid #30363d', borderRadius:10, padding:'16px 18px', position:'relative', overflow:'hidden' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+        <p style={{ fontSize:12, fontWeight:500, color:'#8b949e', margin:0 }}>Scan Accuracy</p>
+        <Activity size={15} style={{ color }} strokeWidth={2} />
+      </div>
+      <p style={{ fontSize:26, fontWeight:700, color, margin:0, lineHeight:1 }}>{accuracy.toFixed(1)}%</p>
+      <div style={{ marginTop:8, fontSize:10, color:'#6e7681', display:'flex', flexDirection:'column', gap:2 }}>
+        <div style={{ display:'flex', justifyContent:'space-between' }}>
+          <span>Files:</span><span style={{ color:'#8b949e' }}>{metrics.filesScanned || 0}</span>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between' }}>
+          <span>Processes:</span><span style={{ color:'#8b949e' }}>{metrics.processesAnalyzed || 0}</span>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between' }}>
+          <span>Connections:</span><span style={{ color:'#8b949e' }}>{metrics.networkConnectionsChecked || 0}</span>
+        </div>
+      </div>
+      {/* Progress bar background */}
+      <div style={{ position:'absolute', bottom:0, left:0, right:0, height:3, background:'rgba(48,54,61,0.3)' }}>
+        <div style={{ height:'100%', width:`${accuracy}%`, background:color, transition:'width 0.5s ease' }} />
+      </div>
+    </div>
+  );
 }

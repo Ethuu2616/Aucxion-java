@@ -1,21 +1,41 @@
 package com.aucxion.service;
 
 import com.aucxion.model.ThreatLog;
-import com.aucxion.repository.ThreatLogRepository;
+import com.aucxion.model.ScanMetrics;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class ThreatDetectionService {
 
-    private final ThreatLogRepository threatLogRepository;
+    private final List<ThreatLog> threatLogs = Collections.synchronizedList(new ArrayList<>());
+    private final AtomicLong idCounter = new AtomicLong(1);
+    private ScanMetrics currentMetrics;
 
-    public ThreatDetectionService(ThreatLogRepository threatLogRepository) {
-        this.threatLogRepository = threatLogRepository;
+    public ThreatDetectionService() {
+        this.currentMetrics = new ScanMetrics();
+    }
+    
+    public void resetMetrics() {
+        this.currentMetrics = new ScanMetrics();
+    }
+    
+    public ScanMetrics getCurrentMetrics() {
+        currentMetrics.calculateAccuracy();
+        return currentMetrics;
+    }
+    
+    public List<ThreatLog> getAllThreats() {
+        return new ArrayList<>(threatLogs);
+    }
+    
+    public void clearAllThreats() {
+        threatLogs.clear();
     }
 
     // ─── DDoS Detection ───────────────────────────────────────────────────────
@@ -36,7 +56,6 @@ public class ThreatDetectionService {
             while ((line = reader.readLine()) != null) {
                 if (line.toUpperCase().contains("ESTABLISHED")) {
                     establishedCount++;
-                    // Extract remote IP
                     String[] parts = line.trim().split("\\s+");
                     if (parts.length >= 3) {
                         String remoteAddr = parts[2];
@@ -46,28 +65,29 @@ public class ThreatDetectionService {
                 }
             }
             process.waitFor();
+            
+            currentMetrics.setNetworkConnectionsChecked(establishedCount);
 
             if (establishedCount > 200) {
-                threats.add(threatLogRepository.save(buildThreat("DDOS", "CRITICAL",
+                threats.add(saveThreat(buildThreat("DDOS", "CRITICAL",
                         "Abnormal spike detected: " + establishedCount + " active ESTABLISHED connections. High probability of DDoS attack in progress.",
                         "Network Layer — " + establishedCount + " connections")));
             } else if (establishedCount > 100) {
-                threats.add(threatLogRepository.save(buildThreat("DDOS", "HIGH",
+                threats.add(saveThreat(buildThreat("DDOS", "HIGH",
                         "Elevated connection count: " + establishedCount + " active ESTABLISHED connections. Monitoring for DDoS pattern.",
                         "Network Layer — " + establishedCount + " connections")));
             }
 
-            // Check for repeated connections from same IP (flood indicator)
             ipCount.forEach((ip, count) -> {
                 if (count > 20) {
-                    threats.add(threatLogRepository.save(buildThreat("DDOS", "HIGH",
+                    threats.add(saveThreat(buildThreat("DDOS", "HIGH",
                             "Repeated connections from single source: " + count + " connections from " + ip + ". Possible targeted flood.",
                             ip)));
                 }
             });
 
         } catch (Exception e) {
-            // No fallback — log the error silently, return empty list
+            // Silent fail
         }
         return threats;
     }
@@ -75,6 +95,7 @@ public class ThreatDetectionService {
     // ─── Ransomware Detection ─────────────────────────────────────────────────
     public List<ThreatLog> detectRansomware() {
         List<ThreatLog> threats = new ArrayList<>();
+        int totalFilesScanned = 0;
 
         String[] suspiciousExtensions = {
             ".locked", ".encrypted", ".crypto", ".crypt", ".enc",
@@ -98,8 +119,10 @@ public class ThreatDetectionService {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
                 String line;
                 List<String> foundFiles = new ArrayList<>();
+                int dirFileCount = 0;
 
                 while ((line = reader.readLine()) != null) {
+                    dirFileCount++;
                     String lower = line.toLowerCase();
                     for (String ext : suspiciousExtensions) {
                         if (lower.endsWith(ext)) {
@@ -109,21 +132,88 @@ public class ThreatDetectionService {
                     }
                 }
                 process.waitFor();
+                totalFilesScanned += dirFileCount;
 
                 if (!foundFiles.isEmpty()) {
                     String sample = foundFiles.size() > 3
                             ? String.join(", ", foundFiles.subList(0, 3)) + " (+" + (foundFiles.size() - 3) + " more)"
                             : String.join(", ", foundFiles);
-                    threats.add(threatLogRepository.save(buildThreat("RANSOMWARE", "CRITICAL",
+                    threats.add(saveThreat(buildThreat("RANSOMWARE", "CRITICAL",
                             "Found " + foundFiles.size() + " file(s) with ransomware encryption extensions in " + dir + ". Files: " + sample,
                             dir)));
                 }
             } catch (Exception ignored) {}
         }
-
-        // Check for shadow copy deletion — a key ransomware indicator
+        
+        currentMetrics.setFilesScanned(totalFilesScanned);
         threats.addAll(detectShadowCopyDeletion());
+        threats.addAll(scanLogFilesForThreats());
 
+        return threats;
+    }
+    
+    private List<ThreatLog> scanLogFilesForThreats() {
+        List<ThreatLog> threats = new ArrayList<>();
+        int totalLogEntries = 0;
+        int totalSystemFiles = 0;
+        
+        String[] logPaths = isWindows()
+                ? new String[]{
+                    "C:\\Windows\\System32\\winevt\\Logs\\System.evtx",
+                    "C:\\Windows\\System32\\winevt\\Logs\\Security.evtx",
+                    "C:\\Windows\\System32\\winevt\\Logs\\Application.evtx"
+                }
+                : new String[]{
+                    "/var/log/syslog",
+                    "/var/log/auth.log",
+                    "/var/log/kern.log"
+                };
+        
+        String[] suspiciousPatterns = {
+            "failed login", "authentication failure", "unauthorized access",
+            "permission denied", "access denied", "intrusion", "malware",
+            "virus", "trojan", "backdoor", "exploit", "attack detected"
+        };
+        
+        for (String logPath : logPaths) {
+            try {
+                java.io.File logFile = new java.io.File(logPath);
+                if (!logFile.exists()) continue;
+                
+                totalSystemFiles++;
+                
+                ProcessBuilder pb = isWindows()
+                        ? new ProcessBuilder("cmd", "/c", "type \"" + logPath + "\" 2>nul | findstr /i \"failed login unauthorized malware virus\"")
+                        : new ProcessBuilder("bash", "-c", "grep -iE 'failed|unauthorized|malware|virus' \"" + logPath + "\" 2>/dev/null | tail -20");
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                String line;
+                int suspiciousCount = 0;
+                
+                while ((line = reader.readLine()) != null && suspiciousCount < 5) {
+                    totalLogEntries++;
+                    String lower = line.toLowerCase();
+                    for (String pattern : suspiciousPatterns) {
+                        if (lower.contains(pattern)) {
+                            suspiciousCount++;
+                            break;
+                        }
+                    }
+                }
+                process.waitFor();
+                
+                if (suspiciousCount > 0) {
+                    threats.add(saveThreat(buildThreat("ZERO_DAY", "MEDIUM",
+                            "Found " + suspiciousCount + " suspicious entries in system log file: " + logPath + ". Possible security incidents detected.",
+                            logPath)));
+                }
+            } catch (Exception ignored) {}
+        }
+        
+        currentMetrics.setLogEntriesReviewed(totalLogEntries);
+        currentMetrics.setSystemFilesChecked(totalSystemFiles);
+        
         return threats;
     }
 
@@ -133,8 +223,9 @@ public class ThreatDetectionService {
 
         try {
             List<String> processes = getRunningProcesses();
+            
+            currentMetrics.setProcessesAnalyzed(processes.size());
 
-            // Known exploit/post-exploitation tools
             String[] exploitTools = {
                 "mimikatz", "meterpreter", "netcat", "nc.exe", "ncat",
                 "psexec", "wce.exe", "fgdump", "pwdump", "procdump",
@@ -146,19 +237,17 @@ public class ThreatDetectionService {
                 String lower = proc.toLowerCase();
                 for (String tool : exploitTools) {
                     if (lower.contains(tool)) {
-                        threats.add(threatLogRepository.save(buildThreat("ZERO_DAY", "CRITICAL",
+                        threats.add(saveThreat(buildThreat("ZERO_DAY", "CRITICAL",
                                 "Known exploit tool detected in running processes: '" + tool + "'. This is a strong indicator of active compromise.",
                                 proc.trim())));
                     }
                 }
             }
 
-            // Privilege escalation check (Windows)
             if (isWindows()) {
                 threats.addAll(detectWindowsPrivilegeEscalation());
             }
 
-            // Detect unusual parent-child process relationships
             threats.addAll(detectAnomalousProcesses(processes));
 
         } catch (Exception ignored) {}
@@ -170,7 +259,6 @@ public class ThreatDetectionService {
     public List<ThreatLog> detectPhishing() {
         List<ThreatLog> threats = new ArrayList<>();
 
-        // Scan hosts file for suspicious redirects
         try {
             String hostsPath = isWindows()
                     ? "C:\\Windows\\System32\\drivers\\etc\\hosts"
@@ -194,7 +282,7 @@ public class ThreatDetectionService {
                 String lower = line.toLowerCase();
                 for (String pattern : phishingPatterns) {
                     if (lower.contains(pattern)) {
-                        threats.add(threatLogRepository.save(buildThreat("PHISHING", "HIGH",
+                        threats.add(saveThreat(buildThreat("PHISHING", "HIGH",
                                 "Suspicious hosts file entry detected — possible DNS hijack or phishing redirect: " + line.trim(),
                                 hostsPath)));
                         break;
@@ -204,7 +292,6 @@ public class ThreatDetectionService {
             process.waitFor();
         } catch (Exception ignored) {}
 
-        // Check for excessive browser processes (tab flood / phishing kit)
         try {
             List<String> processes = getRunningProcesses();
             long chromeCount  = processes.stream().filter(p -> p.toLowerCase().contains("chrome")).count();
@@ -212,17 +299,17 @@ public class ThreatDetectionService {
             long edgeCount    = processes.stream().filter(p -> p.toLowerCase().contains("msedge")).count();
 
             if (chromeCount > 30) {
-                threats.add(threatLogRepository.save(buildThreat("PHISHING", "MEDIUM",
+                threats.add(saveThreat(buildThreat("PHISHING", "MEDIUM",
                         "Unusually high Chrome process count (" + chromeCount + " instances). Possible phishing tab flood or browser hijack.",
                         "chrome.exe — " + chromeCount + " processes")));
             }
             if (firefoxCount > 20) {
-                threats.add(threatLogRepository.save(buildThreat("PHISHING", "MEDIUM",
+                threats.add(saveThreat(buildThreat("PHISHING", "MEDIUM",
                         "Unusually high Firefox process count (" + firefoxCount + " instances). Possible phishing tab flood.",
                         "firefox.exe — " + firefoxCount + " processes")));
             }
             if (edgeCount > 30) {
-                threats.add(threatLogRepository.save(buildThreat("PHISHING", "MEDIUM",
+                threats.add(saveThreat(buildThreat("PHISHING", "MEDIUM",
                         "Unusually high Edge process count (" + edgeCount + " instances). Possible phishing tab flood.",
                         "msedge.exe — " + edgeCount + " processes")));
             }
@@ -253,25 +340,13 @@ public class ThreatDetectionService {
         List<ThreatLog> threats = new ArrayList<>();
         if (!isWindows()) return threats;
         try {
-            // Check if vssadmin or wmic is being used to delete shadow copies
-            ProcessBuilder pb = new ProcessBuilder("cmd", "/c",
-                    "wmic shadowcopy list brief 2>nul");
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            StringBuilder output = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) output.append(line).append("\n");
-            process.waitFor();
-
-            // Also check running processes for shadow copy deletion commands
             List<String> procs = getRunningProcesses();
             String[] shadowDeleteCmds = {"vssadmin delete", "wbadmin delete", "bcdedit /set", "wmic shadowcopy delete"};
             for (String proc : procs) {
                 String lower = proc.toLowerCase();
                 for (String cmd : shadowDeleteCmds) {
                     if (lower.contains(cmd.toLowerCase())) {
-                        threats.add(threatLogRepository.save(buildThreat("RANSOMWARE", "CRITICAL",
+                        threats.add(saveThreat(buildThreat("RANSOMWARE", "CRITICAL",
                                 "Shadow copy deletion command detected: '" + cmd + "'. This is a primary ransomware indicator — backups are being destroyed.",
                                 proc.trim())));
                     }
@@ -309,11 +384,11 @@ public class ThreatDetectionService {
             process.waitFor();
 
             if (!dangerousPrivs.isEmpty()) {
-                threats.add(threatLogRepository.save(buildThreat("ZERO_DAY", "HIGH",
+                threats.add(saveThreat(buildThreat("ZERO_DAY", "HIGH",
                         "High-risk Windows privileges are enabled: " + String.join(", ", dangerousPrivs) + ". These can be abused for privilege escalation.",
                         "System Privileges — " + dangerousPrivs.get(0))));
             } else if (enabledCount > 15) {
-                threats.add(threatLogRepository.save(buildThreat("ZERO_DAY", "MEDIUM",
+                threats.add(saveThreat(buildThreat("ZERO_DAY", "MEDIUM",
                         "Unusually high number of enabled privileges (" + enabledCount + "). Review for potential privilege escalation.",
                         "System Privileges — " + enabledCount + " enabled")));
             }
@@ -323,7 +398,6 @@ public class ThreatDetectionService {
 
     private List<ThreatLog> detectAnomalousProcesses(List<String> processes) {
         List<ThreatLog> threats = new ArrayList<>();
-        // Detect processes running from temp/unusual directories
         String[] suspiciousPaths = {
             "\\temp\\", "\\tmp\\", "\\appdata\\local\\temp\\",
             "\\downloads\\", "\\recycle", "%temp%"
@@ -332,7 +406,7 @@ public class ThreatDetectionService {
             String lower = proc.toLowerCase();
             for (String path : suspiciousPaths) {
                 if (lower.contains(path) && (lower.contains(".exe") || lower.contains(".bat") || lower.contains(".ps1"))) {
-                    threats.add(threatLogRepository.save(buildThreat("ZERO_DAY", "MEDIUM",
+                    threats.add(saveThreat(buildThreat("ZERO_DAY", "MEDIUM",
                             "Executable running from suspicious temporary directory — possible malware dropper or in-memory execution: " + proc.trim(),
                             proc.trim())));
                     break;
@@ -351,6 +425,12 @@ public class ThreatDetectionService {
         log.setDetectedAt(LocalDateTime.now());
         log.setStatus("ACTIVE");
         return log;
+    }
+    
+    private ThreatLog saveThreat(ThreatLog threat) {
+        threat.setId(idCounter.getAndIncrement());
+        threatLogs.add(threat);
+        return threat;
     }
 
     private boolean isWindows() {

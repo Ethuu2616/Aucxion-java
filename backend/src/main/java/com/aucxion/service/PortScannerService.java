@@ -1,7 +1,6 @@
 package com.aucxion.service;
 
 import com.aucxion.model.PortScanResult;
-import com.aucxion.repository.PortScanResultRepository;
 import org.springframework.stereotype.Service;
 
 import java.net.InetSocketAddress;
@@ -9,15 +8,13 @@ import java.net.Socket;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class PortScannerService {
 
-    private final PortScanResultRepository portScanResultRepository;
-
-    public PortScannerService(PortScanResultRepository portScanResultRepository) {
-        this.portScanResultRepository = portScanResultRepository;
-    }
+    private final List<PortScanResult> portResults = Collections.synchronizedList(new ArrayList<>());
+    private final AtomicLong idCounter = new AtomicLong(1);
 
     // Well-known ports with metadata
     private static final Map<Integer, String[]> KNOWN_PORTS = new LinkedHashMap<>();
@@ -52,7 +49,7 @@ public class PortScannerService {
 
     public List<PortScanResult> scanPorts() {
         // Clear old results
-        portScanResultRepository.deleteAll();
+        portResults.clear();
 
         List<PortScanResult> results = new ArrayList<>();
         ExecutorService executor = Executors.newFixedThreadPool(20);
@@ -68,7 +65,9 @@ public class PortScannerService {
             try {
                 PortScanResult result = future.get(3, TimeUnit.SECONDS);
                 if (result != null) {
-                    results.add(portScanResultRepository.save(result));
+                    result.setId(idCounter.getAndIncrement());
+                    portResults.add(result);
+                    results.add(result);
                 }
             } catch (Exception ignored) {}
         }
@@ -96,10 +95,12 @@ public class PortScannerService {
     }
 
     public List<PortScanResult> getAllResults() {
-        return portScanResultRepository.findAll();
+        return new ArrayList<>(portResults);
     }
 
     public List<PortScanResult> getOpenPorts() {
-        return portScanResultRepository.findByIsOpenTrue();
+        return portResults.stream()
+                .filter(PortScanResult::isOpen)
+                .toList();
     }
 }
